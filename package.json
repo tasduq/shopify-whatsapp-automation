@@ -1,0 +1,20 @@
+{
+  "name": "shopify-whatsapp-order-automation",
+  "version": "1.0.0",
+  "description": "WhatsApp order confirmation + dispatch automation for Shopify via Meta Cloud API",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "register-webhooks": "node src/register-webhooks.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "pg": "^8.12.0"
+  }
+}
