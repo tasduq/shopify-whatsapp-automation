@@ -183,6 +183,7 @@ app.get('/webhooks/whatsapp', (req, res) => {
 app.post('/webhooks/whatsapp', express.json(), async (req, res) => {
   try {
     log('whatsapp', 'Incoming webhook received');
+    log('whatsapp', `Raw payload: ${JSON.stringify(req.body)}`);
     const entry = req.body?.entry?.[0]?.changes?.[0]?.value;
     const message = entry?.messages?.[0];
     if (!message) {
