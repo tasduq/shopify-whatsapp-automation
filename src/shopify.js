@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 
-const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || '2025-10';
+const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || '2026-07';
 const BASE_URL = `https://${process.env.SHOPIFY_STORE_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}`;
 
 let shopifyAccessToken = null;
@@ -81,9 +81,10 @@ async function updateShopifyOrder(orderId, status) {
 
 async function registerWebhooks(baseAddress) {
   const token = await getShopifyAccessToken();
+  const normalized = baseAddress.replace(/\/+$/, '');
   const topics = [
-    { topic: 'orders/create', address: `${baseAddress}/webhooks/shopify/order-created` },
-    { topic: 'fulfillments/create', address: `${baseAddress}/webhooks/shopify/fulfillment-created` }
+    { topic: 'orders/create', address: `${normalized}/webhooks/shopify/order-created` },
+    { topic: 'fulfillments/create', address: `${normalized}/webhooks/shopify/fulfillment-created` }
   ];
 
   const results = [];

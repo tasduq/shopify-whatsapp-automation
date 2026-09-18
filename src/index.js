@@ -4,9 +4,24 @@ const express = require('express');
 const db = require('./db');
 const shopify = require('./shopify');
 const { sendWhatsAppTemplate } = require('./whatsapp');
+const { normalizePhone } = require('./phone');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Format a Shopify shipping_address into a one-line string.
+function formatAddress(addr) {
+  if (!addr) return '';
+  const parts = [
+    addr.address1,
+    addr.address2,
+    addr.city,
+    addr.zip,
+    addr.province,
+    addr.country
+  ].filter(Boolean);
+  return parts.join(', ');
+}
 
 // Serve static assets (e.g. logo used on the privacy policy page).
 app.use('/assets', express.static(`${__dirname}/assets`));
@@ -164,7 +179,7 @@ app.post('/webhooks/whatsapp', express.json(), async (req, res) => {
     const message = entry?.messages?.[0];
     if (!message || message.type !== 'button') return res.sendStatus(200);
 
-    const phone = message.from;
+    const phone = normalizePhone(message.from);
     const buttonText = message.button?.text || '';
 
     const order = await db.findLatestByPhone(phone);
@@ -190,17 +205,25 @@ app.post('/webhooks/shopify/order-created', rawBodyParser, async (req, res) => {
     if (!shopify.verifyShopifyWebhook(req)) return res.sendStatus(401);
 
     const order = req.body;
-    const phone = order.customer?.phone || order.phone;
-    if (!phone) return res.sendStatus(200);
+    const rawPhone = order.customer?.phone || order.phone;
+    if (!rawPhone) return res.sendStatus(200);
 
-    const firstName = order.customer?.first_name || 'there';
+    const phone = normalizePhone(rawPhone);
+
     const orderNumber = String(order.order_number ?? order.name ?? order.id);
-    const totalPrice = order.total_price ?? '';
+
+    const lineItemsStr = (order.line_items || [])
+      .map((item) => `${item.title} × ${item.quantity}`)
+      .join(', ');
+
+    const subtotalPrice = order.subtotal_price ?? '';
+    const deliveryAddress = formatAddress(order.shipping_address);
 
     await sendWhatsAppTemplate(phone, 'order_confirmation', [
-      firstName,
       orderNumber,
-      totalPrice
+      lineItemsStr,
+      subtotalPrice,
+      deliveryAddress
     ]);
 
     await db.insertOrder({
