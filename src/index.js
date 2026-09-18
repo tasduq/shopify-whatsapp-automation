@@ -9,6 +9,11 @@ const { normalizePhone } = require('./phone');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Prefixed logger with timestamps for easy reading in Railway logs.
+function log(scope, msg) {
+  console.log(`[${new Date().toISOString()}] [${scope}] ${msg}`);
+}
+
 // Format a Shopify shipping_address into a one-line string.
 function formatAddress(addr) {
   if (!addr) return '';
@@ -167,34 +172,50 @@ app.get('/webhooks/whatsapp', (req, res) => {
   const challenge = req.query['hub.challenge'];
 
   if (mode === 'subscribe' && token === process.env.META_VERIFY_TOKEN) {
+    log('whatsapp', 'Verification handshake SUCCESS (token matched)');
     return res.status(200).send(challenge);
   }
+  log('whatsapp', `Verification handshake FAILED (mode=${mode}, token=${token})`);
   res.sendStatus(403);
 });
 
 // ---------- Meta WhatsApp webhook: incoming messages ----------
 app.post('/webhooks/whatsapp', express.json(), async (req, res) => {
   try {
+    log('whatsapp', 'Incoming webhook received');
     const entry = req.body?.entry?.[0]?.changes?.[0]?.value;
     const message = entry?.messages?.[0];
-    if (!message || message.type !== 'button') return res.sendStatus(200);
+    if (!message) {
+      log('whatsapp', 'No message in payload (status/delivery update or empty) — ignoring');
+      return res.sendStatus(200);
+    }
+    if (message.type !== 'button') {
+      log('whatsapp', `Ignoring non-button message type: ${message.type}`);
+      return res.sendStatus(200);
+    }
 
     const phone = normalizePhone(message.from);
     const buttonText = message.button?.text || '';
+    log('whatsapp', `Button reply received: phone=${phone}, button="${buttonText}"`);
 
     const order = await db.findLatestByPhone(phone);
     if (!order) {
-      console.warn(`[whatsapp] no order found for phone ${phone}`);
+      log('whatsapp', `No matching order found for phone ${phone} — ignoring reply`);
       return res.sendStatus(200);
     }
 
     const newStatus = buttonText.toLowerCase() === 'confirm' ? 'confirmed' : 'cancelled';
+    log('whatsapp', `Matched DB order id=${order.id} (shopify_order_id=${order.shopify_order_id}); setting status=${newStatus}`);
+
     await db.updateStatus(order.id, newStatus);
+    log('whatsapp', `DB status updated to "${newStatus}" for order id=${order.id}`);
+
     await shopify.updateShopifyOrder(order.shopify_order_id, newStatus);
+    log('whatsapp', `Shopify order ${order.shopify_order_id} updated (${newStatus})`);
 
     res.sendStatus(200);
   } catch (err) {
-    console.error('[whatsapp] error processing reply:', err);
+    console.error(`[${new Date().toISOString()}] [whatsapp] ERROR processing reply:`, err);
     res.sendStatus(200); // ack so Meta doesn't retry endlessly
   }
 });
@@ -202,19 +223,29 @@ app.post('/webhooks/whatsapp', express.json(), async (req, res) => {
 // ---------- Shopify webhook: order created ----------
 app.post('/webhooks/shopify/order-created', rawBodyParser, async (req, res) => {
   try {
-    if (!shopify.verifyShopifyWebhook(req)) return res.sendStatus(401);
+    log('shopify', 'orders/create webhook received');
+    if (!shopify.verifyShopifyWebhook(req)) {
+      log('shopify', 'HMAC verification FAILED — rejecting webhook (401)');
+      return res.sendStatus(401);
+    }
+    log('shopify', 'HMAC verification passed');
 
     const order = req.body;
     const rawPhone = order.customer?.phone || order.phone;
-    if (!rawPhone) return res.sendStatus(200);
+    if (!rawPhone) {
+      log('shopify', `Order ${order.id} has no phone number — skipping WhatsApp`);
+      return res.sendStatus(200);
+    }
 
     const phone = normalizePhone(rawPhone);
+    log('shopify', `Order id=${order.id} raw phone="${rawPhone}" normalized to ${phone}`);
 
     const orderNumber = String(order.order_number ?? order.name ?? order.id);
 
     const lineItemsStr = (order.line_items || [])
       .map((item) => `${item.title} × ${item.quantity}`)
       .join(', ');
+    log('shopify', `Order ${orderNumber}: ${(order.line_items || []).length} line items, subtotal=${order.subtotal_price}`);
 
     const subtotalPrice = order.subtotal_price ?? '';
     const deliveryAddress = formatAddress(order.shipping_address);
@@ -225,16 +256,18 @@ app.post('/webhooks/shopify/order-created', rawBodyParser, async (req, res) => {
       subtotalPrice,
       deliveryAddress
     ]);
+    log('shopify', `WhatsApp confirmation SENT to ${phone} for order ${orderNumber}`);
 
     await db.insertOrder({
       shopifyOrderId: order.id,
       orderNumber,
       customerPhone: phone
     });
+    log('shopify', `Order ${orderNumber} saved to DB (phone=${phone})`);
 
     res.sendStatus(200);
   } catch (err) {
-    console.error('[shopify] error processing order-created:', err);
+    console.error(`[${new Date().toISOString()}] [shopify] ERROR processing order-created:`, err);
     res.sendStatus(500);
   }
 });
@@ -242,26 +275,37 @@ app.post('/webhooks/shopify/order-created', rawBodyParser, async (req, res) => {
 // ---------- Shopify webhook: fulfillment created ----------
 app.post('/webhooks/shopify/fulfillment-created', rawBodyParser, async (req, res) => {
   try {
-    if (!shopify.verifyShopifyWebhook(req)) return res.sendStatus(401);
+    log('shopify', 'fulfillments/create webhook received');
+    if (!shopify.verifyShopifyWebhook(req)) {
+      log('shopify', 'HMAC verification FAILED — rejecting webhook (401)');
+      return res.sendStatus(401);
+    }
+    log('shopify', 'HMAC verification passed');
 
     const fulfillment = req.body;
     const trackingNumber = fulfillment.tracking_number;
     const trackingUrl = fulfillment.tracking_url || trackingNumber;
+    log('shopify', `Fulfillment for shopify_order_id=${fulfillment.order_id}; tracking=${trackingNumber} url=${trackingUrl}`);
 
     const order = await db.findByShopifyOrderId(fulfillment.order_id);
-    if (!order) return res.sendStatus(200);
+    if (!order) {
+      log('shopify', `No DB record for shopify_order_id=${fulfillment.order_id} — skipping dispatch message`);
+      return res.sendStatus(200);
+    }
 
     await sendWhatsAppTemplate(order.customer_phone, 'order_dispatched', [
       order.order_number,
       order.order_number,
       trackingUrl
     ]);
+    log('shopify', `Dispatch message SENT to ${order.customer_phone} for order ${order.order_number}`);
 
     await db.updateStatus(order.id, 'dispatched', trackingNumber);
+    log('shopify', `DB status updated to "dispatched" (tracking=${trackingNumber}) for order id=${order.id}`);
 
     res.sendStatus(200);
   } catch (err) {
-    console.error('[shopify] error processing fulfillment-created:', err);
+    console.error(`[${new Date().toISOString()}] [shopify] ERROR processing fulfillment-created:`, err);
     res.sendStatus(500);
   }
 });
@@ -271,14 +315,20 @@ app.get('/register-webhooks', async (req, res) => {
   try {
     const key = req.query.key;
     if (!key || key !== process.env.WEBHOOK_REGISTER_KEY) {
+      log('shopify', 'register-webhooks attempt with INVALID key — rejected (403)');
       return res.status(403).json({ error: 'invalid key' });
     }
 
     const baseAddress = `https://${req.headers.host}`;
+    log('shopify', `Registering Shopify webhooks with base address ${baseAddress}`);
     const results = await shopify.registerWebhooks(baseAddress);
+    for (const r of results) {
+      log('shopify', `Webhook "${r.topic}" -> status ${r.status}`);
+    }
+    log('shopify', 'Webhook registration complete');
     res.json({ results });
   } catch (err) {
-    console.error('[shopify] register-webhooks failed:', err);
+    console.error(`[${new Date().toISOString()}] [shopify] register-webhooks FAILED:`, err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -287,12 +337,14 @@ app.get('/register-webhooks', async (req, res) => {
 (async () => {
   try {
     await db.initSchema();
-    console.log('[db] schema ready');
+    log('db', 'Schema ready (whatsapp_orders table exists)');
+    log('startup', `DEFAULT_COUNTRY_CODE=${process.env.DEFAULT_COUNTRY_CODE || '92'}`);
+    log('startup', `GRAPH_API_VERSION=${process.env.GRAPH_API_VERSION || 'v21.0'}`);
     app.listen(PORT, () => {
-      console.log(`[server] listening on port ${PORT}`);
+      log('server', `Listening on port ${PORT}`);
     });
   } catch (err) {
-    console.error('[server] failed to start:', err);
+    console.error(`[${new Date().toISOString()}] [server] FAILED to start:`, err);
     process.exit(1);
   }
 })();

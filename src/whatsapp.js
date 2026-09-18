@@ -1,7 +1,13 @@
 const GRAPH_API_VERSION = process.env.GRAPH_API_VERSION || 'v21.0';
 const GRAPH_URL = `https://graph.facebook.com/${GRAPH_API_VERSION}/${process.env.META_PHONE_NUMBER_ID}/messages`;
 
+function log(scope, msg) {
+  console.log(`[${new Date().toISOString()}] [${scope}] ${msg}`);
+}
+
 async function sendWhatsAppTemplate(to, templateName, params) {
+  log('whatsapp', `Sending template "${templateName}" to ${to} with params=${JSON.stringify(params)}`);
+
   const res = await fetch(GRAPH_URL, {
     method: 'POST',
     headers: {
@@ -27,9 +33,10 @@ async function sendWhatsAppTemplate(to, templateName, params) {
 
   const data = await res.json();
   if (!res.ok) {
-    console.error('[whatsapp] failed to send template:', JSON.stringify(data));
+    console.error(`[${new Date().toISOString()}] [whatsapp] FAILED to send "${templateName}" to ${to}:`, JSON.stringify(data));
     throw new Error(`WhatsApp API error (${res.status}): ${JSON.stringify(data)}`);
   }
+  log('whatsapp', `Template "${templateName}" ACCEPTED by Meta for ${to} (message_id=${data.messages?.[0]?.id || 'n/a'})`);
   return data;
 }
 
