@@ -205,14 +205,20 @@ app.post('/webhooks/whatsapp', express.json(), async (req, res) => {
       return res.sendStatus(200);
     }
 
-    const newStatus = buttonText.toLowerCase() === 'confirm' ? 'confirmed' : 'cancelled';
+    const isConfirm = buttonText.toLowerCase() === 'confirm';
+    const newStatus = isConfirm ? 'confirmed' : 'cancelled';
     log('whatsapp', `Matched DB order id=${order.id} (shopify_order_id=${order.shopify_order_id}); setting status=${newStatus}`);
 
     await db.updateStatus(order.id, newStatus);
     log('whatsapp', `DB status updated to "${newStatus}" for order id=${order.id}`);
 
-    await shopify.updateShopifyOrder(order.shopify_order_id, newStatus);
-    log('whatsapp', `Shopify order ${order.shopify_order_id} updated (${newStatus})`);
+    await shopify.setOrderStatusTag(order.shopify_order_id, newStatus);
+    log('whatsapp', `Shopify order ${order.shopify_order_id} tagged "${newStatus}"`);
+
+    if (!isConfirm) {
+      await shopify.cancelShopifyOrder(order.shopify_order_id);
+      log('whatsapp', `Shopify order ${order.shopify_order_id} cancelled`);
+    }
 
     res.sendStatus(200);
   } catch (err) {
@@ -246,18 +252,21 @@ app.post('/webhooks/shopify/order-created', rawBodyParser, async (req, res) => {
     const lineItemsStr = (order.line_items || [])
       .map((item) => `${item.title} × ${item.quantity}`)
       .join(', ');
-    log('shopify', `Order ${orderNumber}: ${(order.line_items || []).length} line items, subtotal=${order.subtotal_price}`);
+    log('shopify', `Order ${orderNumber}: ${(order.line_items || []).length} line items, total=${order.total_price}`);
 
-    const subtotalPrice = order.subtotal_price ?? '';
+    const totalPrice = order.total_price ?? '';
     const deliveryAddress = formatAddress(order.shipping_address);
 
     await sendWhatsAppTemplate(phone, 'order_confirmation', [
       orderNumber,
       lineItemsStr,
-      subtotalPrice,
+      totalPrice,
       deliveryAddress
     ]);
     log('shopify', `WhatsApp confirmation SENT to ${phone} for order ${orderNumber}`);
+
+    await shopify.setOrderStatusTag(order.id, 'pending');
+    log('shopify', `Order ${orderNumber} tagged as pending`);
 
     await db.insertOrder({
       shopifyOrderId: order.id,
@@ -300,6 +309,9 @@ app.post('/webhooks/shopify/fulfillment-created', rawBodyParser, async (req, res
       trackingUrl
     ]);
     log('shopify', `Dispatch message SENT to ${order.customer_phone} for order ${order.order_number}`);
+
+    await shopify.setOrderStatusTag(order.shopify_order_id, 'dispatched');
+    log('shopify', `Order ${order.order_number} tagged as dispatched`);
 
     await db.updateStatus(order.id, 'dispatched', trackingNumber);
     log('shopify', `DB status updated to "dispatched" (tracking=${trackingNumber}) for order id=${order.id}`);
