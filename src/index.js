@@ -305,13 +305,16 @@ app.post('/webhooks/shopify/fulfillment-created', rawBodyParser, async (req, res
       return res.sendStatus(200);
     }
 
+    const customerName = order.customer_name || 'there';
+    const itemsSummary = order.items_summary || 'your order';
+
     const dispatchParams = [
-      order.customer_name ?? 'Customer',
+      customerName,
       order.order_number,
       fulfillment.tracking_company ?? '',
       fulfillment.tracking_number ?? '',
       fulfillment.tracking_url ?? '',
-      order.items_summary ?? ''
+      itemsSummary
     ];
     log('shopify', `order_dispatched params (${dispatchParams.length}): ${JSON.stringify(dispatchParams)}`);
 
