@@ -21,14 +21,18 @@ async function initSchema() {
       created_at TIMESTAMP DEFAULT now()
     );
   `);
+
+  // Add columns if they don't already exist (idempotent migration).
+  await pool.query(`ALTER TABLE whatsapp_orders ADD COLUMN IF NOT EXISTS customer_name TEXT`);
+  await pool.query(`ALTER TABLE whatsapp_orders ADD COLUMN IF NOT EXISTS items_summary TEXT`);
 }
 
-async function insertOrder({ shopifyOrderId, orderNumber, customerPhone }) {
+async function insertOrder({ shopifyOrderId, orderNumber, customerPhone, customerName, itemsSummary }) {
   const result = await pool.query(
-    `INSERT INTO whatsapp_orders (shopify_order_id, order_number, customer_phone)
-     VALUES ($1, $2, $3)
+    `INSERT INTO whatsapp_orders (shopify_order_id, order_number, customer_phone, customer_name, items_summary)
+     VALUES ($1, $2, $3, $4, $5)
      RETURNING *`,
-    [shopifyOrderId, orderNumber, customerPhone]
+    [shopifyOrderId, orderNumber, customerPhone, customerName ?? null, itemsSummary ?? null]
   );
   return result.rows[0];
 }

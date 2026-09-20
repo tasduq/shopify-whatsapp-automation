@@ -271,7 +271,9 @@ app.post('/webhooks/shopify/order-created', rawBodyParser, async (req, res) => {
     await db.insertOrder({
       shopifyOrderId: order.id,
       orderNumber,
-      customerPhone: phone
+      customerPhone: phone,
+      customerName: order.customer?.first_name ?? null,
+      itemsSummary: lineItemsStr
     });
     log('shopify', `Order ${orderNumber} saved to DB (phone=${phone})`);
 
@@ -303,11 +305,17 @@ app.post('/webhooks/shopify/fulfillment-created', rawBodyParser, async (req, res
       return res.sendStatus(200);
     }
 
-    await sendWhatsAppTemplate(order.customer_phone, 'order_dispatched', [
+    const dispatchParams = [
+      order.customer_name ?? 'Customer',
       order.order_number,
-      order.order_number,
-      trackingUrl
-    ]);
+      fulfillment.tracking_company ?? '',
+      fulfillment.tracking_number ?? '',
+      fulfillment.tracking_url ?? '',
+      order.items_summary ?? ''
+    ];
+    log('shopify', `order_dispatched params (${dispatchParams.length}): ${JSON.stringify(dispatchParams)}`);
+
+    await sendWhatsAppTemplate(order.customer_phone, 'order_dispatched', dispatchParams);
     log('shopify', `Dispatch message SENT to ${order.customer_phone} for order ${order.order_number}`);
 
     await shopify.setOrderStatusTag(order.shopify_order_id, 'dispatched');
