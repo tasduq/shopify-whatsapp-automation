@@ -238,7 +238,11 @@ app.post('/webhooks/shopify/order-created', rawBodyParser, async (req, res) => {
     log('shopify', 'HMAC verification passed');
 
     const order = req.body;
-    const rawPhone = order.customer?.phone || order.phone;
+    const rawPhone =
+      order.phone ||
+      order.customer?.phone ||
+      order.shipping_address?.phone ||
+      order.billing_address?.phone;
     if (!rawPhone) {
       log('shopify', `Order ${order.id} has no phone number — skipping WhatsApp`);
       return res.sendStatus(200);
